@@ -16,6 +16,8 @@ import org.objectweb.asm.commons.JSRInlinerAdapter;
 import org.objectweb.asm.commons.Method;
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -30,7 +32,7 @@ import static java.lang.Thread.currentThread;
  */
 class TracingAsmCodeLock extends AsmCodeLock {
 
-    public TracingAsmCodeLock(AdviceAdapter aa) {
+    TracingAsmCodeLock(AdviceAdapter aa) {
         super(
                 aa,
                 new int[]{
@@ -43,25 +45,23 @@ class TracingAsmCodeLock extends AsmCodeLock {
     }
 }
 
+/**
+ * Method在Asm内部的封装,用于封装Asm方法
+ */
 class AsmMethod {
 
-    private final String name;
-    private final String desc;
+    protected final String name;
+    protected final String desc;
 
     AsmMethod(String name, String desc) {
         this.name = name;
         this.desc = desc;
     }
-
-    public String getName() {
-        return name;
-    }
-
-    public String getDesc() {
-        return desc;
-    }
 }
 
+/**
+ * Method匹配器,用于封装Asm方法的匹配
+ */
 class AsmMethodMatcher implements Matcher<AsmMethod> {
 
     private final GaMethod gaMethod;
@@ -72,8 +72,28 @@ class AsmMethodMatcher implements Matcher<AsmMethod> {
 
     @Override
     public boolean matching(AsmMethod target) {
-        return StringUtils.equals(gaMethod.getName(), target.getName())
-                && StringUtils.equals(gaMethod.getDesc(), target.getDesc());
+        return StringUtils.equals(gaMethod.getName(), target.name)
+                && StringUtils.equals(gaMethod.getDesc(), target.desc);
+    }
+
+}
+
+
+/**
+ * TryCatch块,用于ExceptionsTable重排序
+ */
+class AsmTryCatchBlock {
+
+    protected final Label start;
+    protected final Label end;
+    protected final Label handler;
+    protected final String type;
+
+    AsmTryCatchBlock(Label start, Label end, Label handler, String type) {
+        this.start = start;
+        this.end = end;
+        this.handler = handler;
+        this.type = type;
     }
 
 }
@@ -130,6 +150,10 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
             ClassLoader loader, String className, String methodName, String methodDesc,
             Object target, Object[] args) {
 
+        if (!advices.containsKey(adviceId)) {
+            return;
+        }
+
         if (isSelfCallRef.get()) {
             return;
         } else {
@@ -168,8 +192,8 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
      * @param returnObject 返回对象
      *                     若目标为静态方法,则为null
      */
-    public static void methodOnReturnEnd(Object returnObject) {
-        methodOnEnd(false, returnObject);
+    public static void methodOnReturnEnd(Object returnObject, int adviceId) {
+        methodOnEnd(adviceId, false, returnObject);
     }
 
     /**
@@ -178,8 +202,8 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
      *
      * @param throwable 抛出异常
      */
-    public static void methodOnThrowingEnd(Throwable throwable) {
-        methodOnEnd(true, throwable);
+    public static void methodOnThrowingEnd(Throwable throwable, int adviceId) {
+        methodOnEnd(adviceId, true, throwable);
     }
 
     /**
@@ -188,7 +212,11 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
      * @param isThrowing        标记正常返回结束还是抛出异常结束
      * @param returnOrThrowable 正常返回或者抛出异常对象
      */
-    private static void methodOnEnd(boolean isThrowing, Object returnOrThrowable) {
+    private static void methodOnEnd(int adviceId, boolean isThrowing, Object returnOrThrowable) {
+
+        if (!advices.containsKey(adviceId)) {
+            return;
+        }
 
         if (isSelfCallRef.get()) {
             return;
@@ -199,6 +227,12 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
         try {
             // 弹射线程帧栈,恢复Begin所保护的执行帧栈
             final GaStack<Object> frameStack = threadFrameStackPop();
+
+            // 用于保护reg和before执行并发的情况
+            // 如果before没有注入,则不对end做任何处理
+            if (null == frameStack) {
+                return;
+            }
 
             // 弹射执行帧栈,恢复Begin所保护的现场
             final AdviceListener listener = (AdviceListener) frameStack.pop();
@@ -227,16 +261,20 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
     /**
      * 方法内部调用开始
      *
-     * @param adviceId 通知ID
-     * @param owner    调用类名
-     * @param name     调用方法名
-     * @param desc     调用方法描述
+     * @param adviceId   通知ID
+     * @param lineNumber 代码行号
+     * @param owner      调用类名
+     * @param name       调用方法名
+     * @param desc       调用方法描述
      */
-    public static void methodOnInvokeBeforeTracing(int adviceId, String owner, String name, String desc) {
+    public static void methodOnInvokeBeforeTracing(int adviceId, Integer lineNumber, String owner, String name, String desc) {
+        if (!advices.containsKey(adviceId)) {
+            return;
+        }
         final InvokeTraceable listener = (InvokeTraceable) getListener(adviceId);
         if (null != listener) {
             try {
-                listener.invokeBeforeTracing(owner, name, desc);
+                listener.invokeBeforeTracing(lineNumber, owner, name, desc);
             } catch (Throwable t) {
                 logger.warn("advice before tracing failed.", t);
             }
@@ -246,16 +284,20 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
     /**
      * 方法内部调用结束(正常返回)
      *
-     * @param adviceId 通知ID
-     * @param owner    调用类名
-     * @param name     调用方法名
-     * @param desc     调用方法描述
+     * @param adviceId   通知ID
+     * @param lineNumber 代码行号
+     * @param owner      调用类名
+     * @param name       调用方法名
+     * @param desc       调用方法描述
      */
-    public static void methodOnInvokeAfterTracing(int adviceId, String owner, String name, String desc) {
+    public static void methodOnInvokeAfterTracing(int adviceId, Integer lineNumber, String owner, String name, String desc) {
+        if (!advices.containsKey(adviceId)) {
+            return;
+        }
         final InvokeTraceable listener = (InvokeTraceable) getListener(adviceId);
         if (null != listener) {
             try {
-                listener.invokeAfterTracing(owner, name, desc);
+                listener.invokeAfterTracing(lineNumber, owner, name, desc);
             } catch (Throwable t) {
                 logger.warn("advice after tracing failed.", t);
             }
@@ -265,16 +307,21 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
     /**
      * 方法内部调用结束(异常返回)
      *
-     * @param adviceId 通知ID
-     * @param owner    调用类名
-     * @param name     调用方法名
-     * @param desc     调用方法描述
+     * @param adviceId       通知ID
+     * @param lineNumber     代码行号
+     * @param owner          调用类名
+     * @param name           调用方法名
+     * @param desc           调用方法描述
+     * @param throwException 抛出的异常
      */
-    public static void methodOnInvokeThrowTracing(int adviceId, String owner, String name, String desc) {
+    public static void methodOnInvokeThrowTracing(int adviceId, Integer lineNumber, String owner, String name, String desc, String throwException) {
+        if (!advices.containsKey(adviceId)) {
+            return;
+        }
         final InvokeTraceable listener = (InvokeTraceable) getListener(adviceId);
         if (null != listener) {
             try {
-                listener.invokeThrowTracing(owner, name, desc);
+                listener.invokeThrowTracing(lineNumber, owner, name, desc, throwException);
             } catch (Throwable t) {
                 logger.warn("advice throw tracing failed.", t);
             }
@@ -296,7 +343,14 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
     }
 
     private static GaStack<Object> threadFrameStackPop() {
-        return threadBoundContexts.get(currentThread()).pop();
+        final GaStack<GaStack<Object>> stackGaStack = threadBoundContexts.get(currentThread());
+
+        // 用于保护reg和before并发导致before/end乱序的场景
+        if (null == stackGaStack
+                || stackGaStack.isEmpty()) {
+            return null;
+        }
+        return stackGaStack.pop();
     }
 
     private static AdviceListener getListener(int adviceId) {
@@ -317,6 +371,8 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
 
         // 注册监听器
         advices.put(adviceId, listener);
+
+        logger.info("reg adviceId={};listener={}", adviceId, listener);
     }
 
     /**
@@ -333,6 +389,8 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
         if (null != listener) {
             listener.destroy();
         }
+
+        logger.info("unReg adviceId={};listener={}", adviceId, listener);
 
     }
 
@@ -377,7 +435,8 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
 
     private final int adviceId;
     private final boolean isTracing;
-    private final String className;
+    private final String internalClassName;
+    private final String javaClassName;
     private final Matcher<AsmMethod> asmMethodMatcher;
     private final EnhancerAffect affect;
 
@@ -385,25 +444,26 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
     /**
      * 构建通知编织器
      *
-     * @param adviceId         通知ID
-     * @param isTracing        可跟踪方法调用
-     * @param className        类名称(透传)
-     * @param asmMethodMatcher asm方法匹配
-     *                         只有匹配上的方法才会被织入通知器
-     * @param affect           影响计数
-     * @param cv               ClassVisitor for ASM
+     * @param adviceId          通知ID
+     * @param isTracing         可跟踪方法调用
+     * @param internalClassName 类名称(透传)
+     * @param asmMethodMatcher  asm方法匹配
+     *                          只有匹配上的方法才会被织入通知器
+     * @param affect            影响计数
+     * @param cv                ClassVisitor for ASM
      */
     public AdviceWeaver(
             final int adviceId,
             final boolean isTracing,
-            final String className,
+            final String internalClassName,
             final Matcher<AsmMethod> asmMethodMatcher,
             final EnhancerAffect affect,
             final ClassVisitor cv) {
         super(ASM5, cv);
         this.adviceId = adviceId;
         this.isTracing = isTracing;
-        this.className = className;
+        this.internalClassName = internalClassName;
+        this.javaClassName = tranClassName(internalClassName);
         this.asmMethodMatcher = asmMethodMatcher;
         this.affect = affect;
     }
@@ -492,25 +552,6 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
                 visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
             }
 
-//            private void _debug_dup(final String msg) {
-//
-//                if (!isDebugForAsm) {
-//                    return;
-//                }
-//
-//                // print prefix
-//                visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-//                visitLdcInsn(msg);
-//                visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V", false);
-//
-//                // println msg
-//                dup();
-//                visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-//                swap();
-//                visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "toString", "()Ljava/lang/String;", false);
-//                visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
-//            }
-
             /**
              * 加载通知方法
              * @param keyOfMethod 通知方法KEY
@@ -565,9 +606,23 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
             private void loadClassLoader() {
 
                 if (this.isStaticMethod()) {
-                    visitLdcInsn(tranClassName(className));
+
+//                    // fast enhance
+//                    if (GlobalOptions.isEnableFastEnhance) {
+//                        visitLdcInsn(Type.getType(String.format("L%s;", internalClassName)));
+//                        visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getClassLoader", "()Ljava/lang/ClassLoader;", false);
+//                    }
+
+                    // normal enhance
+//                    else {
+
+                    // 这里不得不用性能极差的Class.forName()来完成类的获取,因为有可能当前这个静态方法在执行的时候
+                    // 当前类并没有完成实例化,会引起JVM对class文件的合法性校验失败
+                    // 未来我可能会在这一块考虑性能优化,但对于当前而言,功能远远重要于性能,也就不打算折腾这么复杂了
+                    visitLdcInsn(javaClassName);
                     invokeStatic(ASM_TYPE_CLASS, Method.getMethod("Class forName(String)"));
                     invokeVirtual(ASM_TYPE_CLASS, Method.getMethod("ClassLoader getClassLoader()"));
+//                    }
 
                 } else {
                     loadThis();
@@ -597,7 +652,7 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
 
                 dup();
                 push(2);
-                push(className);
+                push(tranClassName(javaClassName));
                 arrayStore(ASM_TYPE_STRING);
 
                 dup();
@@ -662,7 +717,7 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
             private void loadReturnArgs() {
                 dup2X1();
                 pop2();
-                push(1);
+                push(2);
                 newArray(ASM_TYPE_OBJECT);
                 dup();
                 dup2X1();
@@ -670,6 +725,12 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
                 push(0);
                 swap();
                 arrayStore(ASM_TYPE_OBJECT);
+
+                dup();
+                push(1);
+                push(adviceId);
+                box(ASM_TYPE_INT);
+                arrayStore(ASM_TYPE_INTEGER);
             }
 
             @Override
@@ -715,7 +776,7 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
             private void loadThrowArgs() {
                 dup2X1();
                 pop2();
-                push(1);
+                push(2);
                 newArray(ASM_TYPE_OBJECT);
                 dup();
                 dup2X1();
@@ -723,13 +784,20 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
                 push(0);
                 swap();
                 arrayStore(ASM_TYPE_THROWABLE);
+
+                dup();
+                push(1);
+                push(adviceId);
+                box(ASM_TYPE_INT);
+                arrayStore(ASM_TYPE_INTEGER);
             }
 
             @Override
             public void visitMaxs(int maxStack, int maxLocals) {
 
                 mark(endLabel);
-                catchException(beginLabel, endLabel, ASM_TYPE_THROWABLE);
+                visitTryCatchBlock(beginLabel, endLabel, mark(), ASM_TYPE_THROWABLE.getInternalName());
+                // catchException(beginLabel, endLabel, ASM_TYPE_THROWABLE);
 
                 codeLockForTracing.lock(new CodeLock.Block() {
                     @Override
@@ -843,10 +911,10 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
 
 
             /**
-             * 加载方法调用跟踪通知所需参数数组
+             * 加载方法调用跟踪通知所需参数数组(for before/after)
              */
-            private void loadArrayForInvokeTracing(String owner, String name, String desc) {
-                push(4);
+            private void loadArrayForInvokeBeforeOrAfterTracing(String owner, String name, String desc) {
+                push(5);
                 newArray(ASM_TYPE_OBJECT);
 
                 dup();
@@ -855,20 +923,78 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
                 box(ASM_TYPE_INT);
                 arrayStore(ASM_TYPE_INTEGER);
 
+                if (null != currentLineNumber) {
+                    dup();
+                    push(1);
+                    push(currentLineNumber);
+                    box(ASM_TYPE_INT);
+                    arrayStore(ASM_TYPE_INTEGER);
+                }
+
                 dup();
-                push(1);
+                push(2);
                 push(owner);
                 arrayStore(ASM_TYPE_STRING);
 
                 dup();
-                push(2);
+                push(3);
                 push(name);
                 arrayStore(ASM_TYPE_STRING);
 
                 dup();
-                push(3);
+                push(4);
                 push(desc);
                 arrayStore(ASM_TYPE_STRING);
+            }
+
+            /**
+             * 加载方法调用跟踪通知所需参数数组(for throw)
+             */
+            private void loadArrayForInvokeThrowTracing(String owner, String name, String desc) {
+                push(6);
+                newArray(ASM_TYPE_OBJECT);
+
+                dup();
+                push(0);
+                push(adviceId);
+                box(ASM_TYPE_INT);
+                arrayStore(ASM_TYPE_INTEGER);
+
+
+                if (null != currentLineNumber) {
+                    dup();
+                    push(1);
+                    push(currentLineNumber);
+                    box(ASM_TYPE_INT);
+                    arrayStore(ASM_TYPE_INTEGER);
+                }
+
+                dup();
+                push(2);
+                push(owner);
+                arrayStore(ASM_TYPE_STRING);
+
+                dup();
+                push(3);
+                push(name);
+                arrayStore(ASM_TYPE_STRING);
+
+                dup();
+                push(4);
+                push(desc);
+                arrayStore(ASM_TYPE_STRING);
+
+                dup2(); // e,a,e,a
+                swap(); // e,a,a,e
+                invokeVirtual(ASM_TYPE_OBJECT, Method.getMethod("Class getClass()"));
+                invokeVirtual(ASM_TYPE_CLASS, Method.getMethod("String getName()"));
+
+                // e,a,a,s
+                push(5); // e,a,a,s,4
+                swap();  // e,a,a,4,s
+                arrayStore(ASM_TYPE_STRING);
+
+                // e,a
             }
 
 
@@ -908,14 +1034,21 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
                     public void code() {
 
                         final StringBuilder append = new StringBuilder();
-                        _debug(append, "debug:"+label+"()");
+                        _debug(append, "debug:" + label + "()");
+
+                        if (tracingType == KEY_GREYS_ADVICE_THROW_INVOKING_METHOD) {
+                            loadArrayForInvokeThrowTracing(owner, name, desc);
+                        } else {
+                            loadArrayForInvokeBeforeOrAfterTracing(owner, name, desc);
+                        }
+                        _debug(append, "loadArrayForInvokeTracing()");
 
                         loadAdviceMethod(tracingType);
+                        swap();
                         _debug(append, "loadAdviceMethod()");
 
                         pushNull();
-                        loadArrayForInvokeTracing(owner, name, desc);
-                        _debug(append, "loadArrayForInvokeTracing()");
+                        swap();
 
                         invokeVirtual(ASM_TYPE_METHOD, ASM_METHOD_METHOD_INVOKE);
                         pop();
@@ -924,6 +1057,14 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
                     }
                 });
 
+            }
+
+            private Integer currentLineNumber;
+
+            @Override
+            public void visitLineNumber(int line, Label start) {
+                super.visitLineNumber(line, start);
+                currentLineNumber = line;
             }
 
             @Override
@@ -970,6 +1111,21 @@ public class AdviceWeaver extends ClassVisitor implements Opcodes {
 
             }
 
+            // 用于try-catch的冲排序,目的是让tracing的try...catch能在exceptions tables排在前边
+            private final Collection<AsmTryCatchBlock> asmTryCatchBlocks = new ArrayList<AsmTryCatchBlock>();
+
+            @Override
+            public void visitTryCatchBlock(Label start, Label end, Label handler, String type) {
+                asmTryCatchBlocks.add(new AsmTryCatchBlock(start, end, handler, type));
+            }
+
+            @Override
+            public void visitEnd() {
+                for (AsmTryCatchBlock tcb : asmTryCatchBlocks) {
+                    super.visitTryCatchBlock(tcb.start, tcb.end, tcb.handler, tcb.type);
+                }
+                super.visitEnd();
+            }
         };
 
     }

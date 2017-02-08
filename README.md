@@ -9,7 +9,7 @@
 
 * [关于软件](https://github.com/oldmanpushcart/greys-anatomy/wiki/Home)
 * [程序安装](https://github.com/oldmanpushcart/greys-anatomy/wiki/installing)
-* [入门说明](https://github.com/oldmanpushcart/greys-anatomy/wiki/Getting-Start)
+* [入门说明](https://github.com/oldmanpushcart/greys-anatomy/wiki/Getting-Started)
 * [常见问题](https://github.com/oldmanpushcart/greys-anatomy/wiki/FAQ)
 * [更新记事](https://github.com/oldmanpushcart/greys-anatomy/wiki/Chronicle)
 * [详细文档](https://github.com/oldmanpushcart/greys-anatomy/wiki/greys-pdf)
@@ -30,73 +30,15 @@
 
 ## 最新版本
 
-### **VERSION :** 1.7.5.0
+### **VERSION :** 1.7.6.4
 
-- 增加`gs.sh`和`ga.sh`两个脚本
-- 增加`js`命令,[支持javascript脚本](https://github.com/oldmanpushcart/greys-anatomy/wiki/JavaScriptSupport)
-- `js`命令支持CommonJS规范(BMD规范实现)
+1. contation-express增加`#cost`变量，影响命令`stack`、`watch`
 
-  ```javascript
-  /**
-   * 模版
-   */
-  require(['greys'], function (greys) {
-      greys.watching({
-  
-          /**
-           * 脚本创建函数
-           * 在脚本第一次运行时候执行，可以在这个函数中进行脚本初始化工作
-           * @param output 输出器
-           */
-          create: function (output) {
-  
-          },
-  
-          /**
-           * 脚本销毁函数
-           * 在脚本运行完成时候执行，可以在这个函数中进行脚本销毁工作
-           * @param output 输出器
-           */
-          destroy: function (output) {
-  
-          },
-  
-          /**
-           * 方法执行前回调函数
-           * 在Java方法执行之前执行该函数
-           * @param output    输出器
-           * @param advice    通知点
-           * @param context   方法执行上下文(线程安全)
-           */
-          before: function (output, advice, context) {
-  
-          },
-  
-          /**
-           * 方法返回回调函数
-           * 在Java方法执行成功之后，Java方法返回之前执行该函数
-           * @param output    输出器
-           * @param advice    通知点
-           * @param context   方法执行上下文(线程安全)
-           */
-          returning: function (output, advice, context) {
-  
-          },
-  
-          /**
-           * 方法抛异常回调函数
-           * 在Java方法内部执行抛异常之后，Java方法对外抛异常之前执行该函数
-           * @param output    输出器
-           * @param advice    通知点
-           * @param context   方法执行上下文(线程安全)
-           */
-          throwing: function (output, advice, context) {
-  
-          },
-  
-      });
-  })
-  ```
+    > PS：其它命令其实很早就支持用`#cost`变量作为拦截过滤的条件，单位`ms`，`stack`、`watch`这两个命令属于遗漏这次修复
+
+2. `ptrace`、`trace`、`watch`、`tt`等命令增加对中间件跟踪号的支持
+
+    > 在很多大公司中,会有比较多的中间件调用链路渲染技术用来记录和支撑分布式调用场景下的系统串联，用于串联各个系统调用的一般是一个全局唯一的跟踪号。在阿里巴巴中间件中，我们用的是EagleEye
 
 ### 版本号说明
 
